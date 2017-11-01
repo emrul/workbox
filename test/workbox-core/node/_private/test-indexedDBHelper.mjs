@@ -13,7 +13,7 @@ const catchAsyncError = async (promiseOrFn) => {
   } catch (err) {
     return err;
   }
-}
+};
 
 const data = {
   // keyPath: email, index: email (unique)
@@ -60,13 +60,13 @@ const data = {
       content: 'Aliquam non eros vulputate scelerisque.',
     },
   ],
-}
+};
 
 const createTestDb = async () => {
   return await new PIDB('db', 1, {
     onupgradeneeded: (evt) => {
       const db = evt.target.result;
-      const usersStore = db.createObjectStore('users', {keyPath: 'email'});
+      db.createObjectStore('users', {keyPath: 'email'});
 
       const postsStore = db.createObjectStore('posts', {autoIncrement: true});
       postsStore.createIndex('userEmail', 'userEmail', {unique: false});
@@ -124,7 +124,7 @@ describe(`PIDB`, function() {
 
       expect(db._name).to.equal('db');
       expect(db._version).to.equal(1);
-      expect(db._onupgradeneeded).to.equal(onupgradeneeded)
+      expect(db._onupgradeneeded).to.equal(onupgradeneeded);
       expect(db._onversionchange).to.equal(onversionchange);
     });
   });
@@ -170,12 +170,13 @@ describe(`PIDB`, function() {
 
     // Note: doesn't work in node
     it.skip(`throws if there's an error opening the connection`, async function() {
-      const db = await new PIDB('db', 2).open()
+      const db = await new PIDB('db', 2).open();
 
       // Stop the event from bubbling to the global object
       // and firing the global onerror handler.
       // https://github.com/w3c/IndexedDB/issues/49
       sandbox.stub(self, 'onerror');
+
       const err = await catchAsyncError(new PIDB('db', 1).open());
       expect(err.message).to.match(/version/);
 
@@ -343,7 +344,6 @@ describe(`PIDB`, function() {
 
       await db.deleteDatabase();
     });
-
   });
 
   describe(`getAll`, function() {
@@ -570,8 +570,6 @@ describe(`PIDB`, function() {
       await db.deleteDatabase();
     });
 
-    return;
-
     it(`provides a 'complete' function to resolve a transaction with a value`,
         async function() {
       const db = await createAndPopulateTestDb();
@@ -585,7 +583,7 @@ describe(`PIDB`, function() {
             .onsuccess = (evt) => {
           const cursor = evt.target.result;
           complete(cursor ? cursor.value : null);
-        }
+        };
       });
       expect(comment).to.deep.equal(data.comments[4]);
 
@@ -625,7 +623,7 @@ describe(`PIDB`, function() {
       // Stop the event from bubbling to the global object
       // and firing the global onerror handler.
       // https://github.com/w3c/IndexedDB/issues/49
-      sandbox.stub(self, 'onerror');
+      // sandbox.stub(self, 'onerror');
 
       const err = await catchAsyncError(db.transaction(
           ['users'], 'readwrite', (stores) => {
@@ -638,10 +636,11 @@ describe(`PIDB`, function() {
     });
   });
 
-  return;
-
   describe(`close`, function() {
-    it(`closes a connection to a database`, async function() {
+    // TODO(philipwalton): shelving-mock-indexeddb doesn't define a prototype
+    // for IDBDatabase, so we can't spy on it here, but this passes in
+    // browser tests.
+    it.skip(`closes a connection to a database`, async function() {
       sandbox.spy(IDBDatabase.prototype, 'close');
 
       const db = await createTestDb();
@@ -656,7 +655,10 @@ describe(`PIDB`, function() {
   });
 
   describe(`deleteDatabase`, function() {
-    it(`deletes a database`, async function() {
+    // TODO(philipwalton): shelving-mock-indexeddb defines deleteDatabase
+    // as an non-writable property, so we can't spy on it, but this passes in
+    // browser tests.
+    it.skip(`deletes a database`, async function() {
       sandbox.spy(indexedDB, 'deleteDatabase');
 
       const db = await createTestDb();
@@ -665,7 +667,7 @@ describe(`PIDB`, function() {
       expect(indexedDB.deleteDatabase.calledOnce).to.be.true;
     });
 
-    it(`throws when an error occurs`, async function() {
+    it.skip(`throws when an error occurs`, async function() {
       const fakeError = new Error();
       sandbox.stub(indexedDB, 'deleteDatabase').callsFake(() => {
         const result = {};
@@ -713,7 +715,7 @@ describe(`PIDB`, function() {
             });
             PIDB.onsuccessAll(updateRequests, complete);
           }
-        }
+        };
       });
       // Each request's result is the primary key of the entry updated.
       expect(comments).to.deep.equal([3, 4, 5]);

@@ -44,7 +44,10 @@ class PIDB {
   }
 
   /**
+   * Opens a connected to an IDBDatabase, invokes any onupgradedneeded
+   * callback, and added an onversionchange callback to the database.
    *
+   * @return {IDBDatabase}
    */
   async open() {
     if (this._db) return;
@@ -79,7 +82,7 @@ class PIDB {
           db.onversionchange = this._onversionchange;
           resolve(db);
         }
-      }
+      };
     });
 
     return this;
@@ -123,8 +126,6 @@ class PIDB {
    *
    * @param {string} storeName
    * @param {...*} args The values passed to the delegated method.
-   * @param {number} count
-   * @return {Array}
    */
   async delete(storeName, ...args) {
     await this._call('delete', storeName, 'readwrite', ...args);
@@ -172,6 +173,7 @@ class PIDB {
    * query, direction, and count. This method returns an array of objects
    * with the signature {key, primaryKey, value}.
    *
+   * @param {string} storeName
    * @param {Object} [opts]
    * @param {IDBCursorDirection} [opts.direction]
    * @param {*} [opts.query]
@@ -198,7 +200,7 @@ class PIDB {
         } else {
           done(results);
         }
-      }
+      };
     });
   }
 
@@ -227,7 +229,7 @@ class PIDB {
       const abort = () => {
         reject(new Error('The transaction was manually aborted'));
         txn.abort();
-      }
+      };
       txn.onerror = (evt) => reject(evt.target.error);
       txn.onabort = (evt) => reject(evt.target.error);
       txn.oncomplete = () => resolve();
@@ -241,14 +243,18 @@ class PIDB {
     return result;
   }
 
+  /**
+   * Delegates async to a native IDBObjectStore method.
+   *
+   * @param {string} method The method name.
+   * @param {string} storeName The object store name.
+   * @param {string} type Can be `readonly` or `readwrite`.
+   * @param {...*} args The list of args to pass to the native method.
+   * @return {*} The result of the transaction.
+   */
   async _call(method, storeName, type, ...args) {
     await this.open();
     const callback = (stores, done) => {
-      if (method == 'getAll') {
-        debugger;
-      }
-
-
       stores[storeName][method](...args).onsuccess = (evt) => {
         done(evt.target.result);
       };
@@ -257,10 +263,15 @@ class PIDB {
     return await this.transaction([storeName], type, callback);
   }
 
+  /**
+   * The default onversionchange handler, which closes the database so other
+   * connections can open without being blocked.
+   *
+   * @param {Event} evt
+   */
   _onversionchange(evt) {
     this.close();
   }
-
 
   /**
    * Closes the connection opened by `PIDB.open()`. Generally this method
@@ -295,6 +306,7 @@ class PIDB {
    * method takes an array of IDBRequests and runs the callback once all of
    * them are successful. This method should be used along with the
    * `transaction()` so any errors are automatically handled.
+   *
    * @param {Array<IDBRequest>} requests
    * @param {function(Array<*>):undefined} callback
    */

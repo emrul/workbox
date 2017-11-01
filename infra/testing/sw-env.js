@@ -16,7 +16,7 @@ const {
   IDBFactory,
   IDBKeyRange,
   IDBDatabase,
-  IDBObjectStore
+  IDBObjectStore,
 } = require('shelving-mock-indexeddb');
 const URLSearchParams = require('url-search-params');
 const Blob = require('./sw-env-mocks/Blob');
