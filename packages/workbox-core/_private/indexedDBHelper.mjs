@@ -17,164 +17,320 @@
 import '../_version.mjs';
 
 /**
- * This is a wrapper that makes it easier to use IDB.
- *
- * @private
- * @memberof module:workbox-core
+ * A class that wraps common IndexedDB functionality in a promise-based API.
+ * It exposes all the underlying power and functionality of IndexedDB, but
+ * wraps the most commonly used features in a way that's much simpler to use.
  */
-class DBWrapper {
+class PIDB {
   /**
-   * Wraps a provided Database.
-   *
-   * @param {IDBDatabase} idb
-   */
-  constructor(idb) {
-    this._db = idb;
-  }
-
-  /**
-   * Get a value for a given ID.
-   *
-   * @param {string} storename
-   * @param {Object} key
-   * @return {Promise<string>}
-   */
-  get(storename, key) {
-    return new Promise((resolve, reject) => {
-      const transaction = this._db.transaction(storename, 'readonly');
-
-      transaction.onerror = () => {
-        // Don't forget to handle errors!
-        reject(transaction.error);
-      };
-
-      const getRequest = transaction.objectStore(storename).get(key);
-      getRequest.onsuccess = () => resolve(getRequest.result);
-    });
-  }
-
-  /**
-   * @param {string} storename
-   * @param {string} [indexName]
-   * @return {Promise<Object>}
-   */
-  getAll(storename, indexName) {
-    return new Promise((resolve, reject) => {
-      const items = {};
-
-      const transaction = this._db.transaction(storename, 'readonly');
-      transaction.onerror = () => {
-        // Don't forget to handle errors!
-        reject(transaction.error);
-      };
-      transaction.oncomplete = () => {
-        resolve(items);
-      };
-
-      const objectStore = transaction.objectStore(storename);
-      const storeToUse = indexName ? objectStore.index(indexName) : objectStore;
-      const cursorRequest = storeToUse.openCursor();
-      cursorRequest.onsuccess = (evt) => {
-        const cursor = evt.target.result;
-        if (!cursor) {
-          return;
-        }
-
-        items[cursor.key] = cursor.value;
-        cursor.continue();
-      };
-    });
-  }
-
-  /**
-   * Put a value in the database for a given id.
-   *
-   * @param {string} storename
-   * @param {Object} value
-   * @param {Object} key
-   * @return {Promise}
-   */
-  put(storename, value, key) {
-    return new Promise((resolve, reject) => {
-      const transaction = this._db.transaction(storename, 'readwrite');
-
-      transaction.onerror = () => {
-        // Don't forget to handle errors!
-        reject(transaction.error);
-      };
-
-      const request = transaction.objectStore(storename).put(value, key);
-      request.onsuccess = () => resolve();
-    });
-  }
-
-  /**
-   * Delete a value in the database with a given id.
-   *
-   * @param {string} storename
-   * @param {Object} key
-   * @return {Promise}
-   */
-  delete(storename, key) {
-    return new Promise((resolve, reject) => {
-      const transaction = this._db.transaction(storename, 'readwrite');
-
-      transaction.onerror = () => {
-        // Don't forget to handle errors!
-        reject(transaction.error);
-      };
-
-      const request = transaction.objectStore(storename).delete(key);
-      request.onsuccess = () => resolve();
-    });
-  }
-}
-
-/**
- * This class will be used to create a generic IndexedDB class for Workbox
- * to use, removing the annoying parts of the API.
- *
- * @private
- * @memberof module:workbox-core
- */
-class IndexedDBHelper {
-  /**
-   * You should never construct this directly.
-   */
-  constructor() {
-    this._opendedDBs = {};
-  }
-
-  /**
-   * Get an opened IndexedDB.
-   *
-   * @param {string} dbName
+   * @param {string} name
    * @param {number} version
-   * @param {Object} upgradeCb
-   * @return {Promise<IDBObjectStore>}
+   * @param {Object=} [callback]
+   * @param {function(this:PIDB, Event):undefined} [callbacks.onupgradeneeded]
+   * @param {function(this:PIDB, Event):undefined} [callbacks.onversionchange]
+   *     Defaults to PIDB.prototype._onversionchange when not specified.
    */
-  async getDB(dbName, version, upgradeCb) {
-    const db = await new Promise((resolve, reject) => {
-      const openRequest = indexedDB.open(dbName, 1);
-      openRequest.onupgradeneeded = (event) => {
-        const db = event.target.result;
+  constructor(name, version, {
+    onupgradeneeded,
+    onversionchange = this._onversionchange,
+  } = {}) {
+    this._name = name;
+    this._version = version;
+    this._onupgradeneeded = onupgradeneeded;
+    this._onversionchange = onversionchange;
 
-        // Create an objectStore for this database
-        upgradeCb(db);
-      };
-      openRequest.onerror = () => {
-        // Do something with request.errorCode!
-        reject(openRequest.error);
-      };
+    // If this is null, it means the database isn't open.
+    this._db = null;
+  }
 
-      openRequest.onsuccess = (event) => {
-        resolve(event.target.result);
+  /**
+   *
+   */
+  async open() {
+    if (this._db) return;
+
+    this._db = await new Promise((resolve, reject) => {
+      // This flag is flipped to true if the timeout callback runs prior
+      // to the request failing or succeeding. Note: we use a timeout instead
+      // of an onblocked handler since there are cases where onblocked will
+      // never never run. A timeout better handles all possible scenarios:
+      // https://github.com/w3c/IndexedDB/issues/223
+      let openRequestTimedOut = false;
+      setTimeout(() => {
+        openRequestTimedOut = true;
+        reject(new Error('The open request was blocked and timed out'));
+      }, this.OPEN_TIMEOUT);
+
+      const openRequest = indexedDB.open(this._name, this._version);
+      openRequest.onerror = (evt) => reject(openRequest.error);
+      openRequest.onupgradeneeded = (evt) => {
+        if (openRequestTimedOut) {
+          openRequest.transaction.abort();
+          evt.target.result.close();
+        } else if (this._onupgradeneeded) {
+          this._onupgradeneeded(evt);
+        }
       };
+      openRequest.onsuccess = (evt) => {
+        const db = evt.target.result;
+        if (openRequestTimedOut) {
+          db.close();
+        } else {
+          db.onversionchange = this._onversionchange;
+          resolve(db);
+        }
+      }
     });
 
-    this._opendedDBs[dbName] = new DBWrapper(db);
-    return this._opendedDBs[dbName];
+    return this;
+  }
+
+  /**
+   * Delegates to the native `get()` method for the object store.
+   *
+   * @param {string} storeName The name of the object store to put the value.
+   * @param {...*} args The values passed to the delegated method.
+   * @return {*} The key of the entry.
+   */
+  async get(storeName, ...args) {
+    return await this._call('get', storeName, 'readonly', ...args);
+  }
+
+  /**
+   * Delegates to the native `add()` method for the object store.
+   *
+   * @param {string} storeName The name of the object store to put the value.
+   * @param {...*} args The values passed to the delegated method.
+   * @return {*} The key of the entry.
+   */
+  async add(storeName, ...args) {
+    return await this._call('add', storeName, 'readwrite', ...args);
+  }
+
+  /**
+   * Delegates to the native `put()` method for the object store.
+   *
+   * @param {string} storeName The name of the object store to put the value.
+   * @param {...*} args The values passed to the delegated method.
+   * @return {*} The key of the entry.
+   */
+  async put(storeName, ...args) {
+    return await this._call('put', storeName, 'readwrite', ...args);
+  }
+
+  /**
+   * Delegates to the native `delete()` method for the object store.
+   *
+   * @param {string} storeName
+   * @param {...*} args The values passed to the delegated method.
+   * @param {number} count
+   * @return {Array}
+   */
+  async delete(storeName, ...args) {
+    await this._call('delete', storeName, 'readwrite', ...args);
+  }
+
+  /**
+   * Delegates to the native `getAll()` or polyfills it via the `find()`
+   * method in older browsers.
+   *
+   * @param {string} storeName
+   * @param {*} query
+   * @param {number} count
+   * @return {Array}
+   */
+  async getAll(storeName, query, count) {
+    if ('getAll' in IDBObjectStore.prototype) {
+      return await this._call('getAll', storeName, 'readonly', query, count);
+    } else {
+      const entries = await this.find(storeName, {query, count});
+      return entries.map(({value}) => value);
+    }
+  }
+
+  /**
+   * Delegates to the native `getAllKeys()` or polyfills it via the `find()`
+   * method in older browsers.
+   *
+   * @param {string} storeName
+   * @param {*} query
+   * @param {number} count
+   * @return {Array}
+   */
+  async getAllKeys(storeName, query, count) {
+    if ('getAllKeys' in IDBObjectStore.prototype) {
+      return await this._call(
+          'getAllKeys', storeName, 'readonly', query, count);
+    } else {
+      const entries = await this.find(storeName, {query, count});
+      return entries.map(({key}) => key);
+    }
+  }
+
+  /**
+   * Supports flexible lookup in an object store by specifying an index,
+   * query, direction, and count. This method returns an array of objects
+   * with the signature {key, primaryKey, value}.
+   *
+   * @param {Object} [opts]
+   * @param {IDBCursorDirection} [opts.direction]
+   * @param {*} [opts.query]
+   * @param {string} [opts.index] The index to use (if specified).
+   * @param {number} [opts.count] The max number of results to return.
+   * @return {Array<{key:*, primaryKey:*, value:Object}>}
+   */
+  async find(storeName, opts = {}) {
+    return await this.transaction([storeName], 'readonly', (stores, done) => {
+      const store = stores[storeName];
+      const target = opts.index ? store.index(opts.index) : store;
+      const results = [];
+
+      target.openCursor(opts.query, opts.direction).onsuccess = (evt) => {
+        const cursor = evt.target.result;
+        if (cursor) {
+          const {primaryKey, key, value} = cursor;
+          results.push({primaryKey, key, value});
+          if (opts.count && results.length >= opts.count) {
+            done(results);
+          } else {
+            cursor.continue();
+          }
+        } else {
+          done(results);
+        }
+      }
+    });
+  }
+
+  /**
+   * Accepts a list of stores, a transaction type, and a callback and
+   * performs a transaction. A promise is returned that resolves to whatever
+   * value the callback chooses. The callback holds all the transaction logic
+   * and is invoked with three arguments:
+   *   1. An object mapping object store names to IDBObjectStore values.
+   *   2. A `done` function, that's used to resolve the promise when
+   *      when the transaction is done.
+   *   3. An `abort` function that can be called to abort the transaction
+   *      at any time.
+   *
+   * @param {Array<string>} storeNames An array of object store names
+   *     involved in the transaction.
+   * @param {string} type Can be `readonly` or `readwrite`.
+   * @param {function(Object, function(), function(*)):?IDBRequest} callback
+   * @return {*} The result of the transaction ran by the callback.
+   */
+  async transaction(storeNames, type, callback) {
+    await this.open();
+    const result = await new Promise((resolve, reject) => {
+      const txn = this._db.transaction(storeNames, type);
+      const done = (value) => resolve(value);
+      const abort = () => {
+        reject(new Error('The transaction was manually aborted'));
+        txn.abort();
+      }
+      txn.onerror = (evt) => reject(evt.target.error);
+      txn.onabort = (evt) => reject(evt.target.error);
+      txn.oncomplete = () => resolve();
+
+      const stores = {};
+      for (const storeName of storeNames) {
+        stores[storeName] = txn.objectStore(storeName);
+      }
+      callback(stores, done, abort);
+    });
+    return result;
+  }
+
+  async _call(method, storeName, type, ...args) {
+    await this.open();
+    const callback = (stores, done) => {
+      if (method == 'getAll') {
+        debugger;
+      }
+
+
+      stores[storeName][method](...args).onsuccess = (evt) => {
+        done(evt.target.result);
+      };
+    };
+
+    return await this.transaction([storeName], type, callback);
+  }
+
+  _onversionchange(evt) {
+    this.close();
+  }
+
+
+  /**
+   * Closes the connection opened by `PIDB.open()`. Generally this method
+   * doesn't need to be called since:
+   *   1. It's usually better to keep a connection open since opening
+   *      a new connection is somewhat slow.
+   *   2. Connections are automatically closed when the reference is
+   *      garbage collected.
+   * The primary use case for needing to close a connection is when another
+   * reference (typically in another tab) needs to upgrade it and would be
+   * blocked by the current, open connection.
+   */
+  close() {
+    if (this._db) this._db.close();
+  }
+
+  /**
+   * Deletes the database.
+   */
+  async deleteDatabase() {
+    this.close();
+    // TODO(philipwalton): add a timeout to handle the blocked case.
+    await new Promise((resolve, reject) => {
+      const request = indexedDB.deleteDatabase(this._name);
+      request.onerror = (evt) => reject(evt.target.error);
+      request.onsuccess = (evt) => resolve();
+    });
+  }
+
+  /**
+   * A helper that makes it easier to run IDBRequests in parallel. This
+   * method takes an array of IDBRequests and runs the callback once all of
+   * them are successful. This method should be used along with the
+   * `transaction()` so any errors are automatically handled.
+   * @param {Array<IDBRequest>} requests
+   * @param {function(Array<*>):undefined} callback
+   */
+  static onsuccessAll(requests, callback) {
+    let called = false;
+
+    const checkIfDone = () => {
+      if (called) return;
+
+      let successfulRequests = 0;
+      for (const request of requests) {
+        if (request.readyState == 'done') {
+          // Exit early if there's any errors. Errors will bubble to the
+          // transaction, so we don't have to report with them here.
+          if (request.error) return;
+
+          successfulRequests++;
+          if (successfulRequests == requests.length) {
+            callback(requests.map((request) => request.result));
+            called = true;
+            return;
+          }
+        } else {
+          request.addEventListener('success', () => checkIfDone(requests));
+          // Once one is added, no need to add more.
+          break;
+        }
+      }
+    };
+    checkIfDone();
   }
 }
 
-export default new IndexedDBHelper();
+// Exposed to let users modify the default timeout on a per-instance
+// or global basis.
+PIDB.prototype.OPEN_TIMEOUT = 2000;
+
+
+export default PIDB;
